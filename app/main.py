@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Depends
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
@@ -6,10 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.schemas import DocumentCreate, QueryRequest
 from app.core.config import settings
-from app.core.database import Base, engine
+from app.core.database import Base, engine, get_db
 
 from app.models import Document, DocumentChunk, Run
-from app.services import answer, create_document_with_chunks
+from app.services import (
+    answer,
+    create_document_with_chunks,
+    extract_text_from_upload,
+)
 
 
 # Create database tables
@@ -38,41 +42,6 @@ app.mount(
 # API endpoints
 # ---------------------------------------------------------
 
-@app.get("/api/documents/{document_id}/chunks")
-def get_document_chunks(document_id: int):
-    with Session(engine) as session:
-        document = session.get(
-            Document,
-            document_id,
-        )
-
-        if document is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Document not found",
-            )
-
-        chunks = session.scalars(
-            select(DocumentChunk)
-            .where(
-                DocumentChunk.document_id == document_id
-            )
-            .order_by(DocumentChunk.chunk_index)
-        ).all()
-
-        return {
-            "document_id": document.id,
-            "title": document.title,
-            "chunk_count": len(chunks),
-            "chunks": [
-                {
-                    "id": chunk.id,
-                    "chunk_index": chunk.chunk_index,
-                    "content": chunk.content,
-                }
-                for chunk in chunks
-            ],
-        }
 
 @app.post("/api/documents")
 def add_document(document_input: DocumentCreate):
@@ -92,24 +61,38 @@ def add_document(document_input: DocumentCreate):
         }
 
 
-@app.get("/api/documents")
-def get_documents():
+@app.get("/api/documents/{document_id}/chunks")
+def get_document_chunks(
+    document_id: int,
+    db: Session = Depends(get_db),
+):
+    document = db.get(Document, document_id)
 
-    with Session(engine) as session:
+    if document is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found",
+        )
 
-        documents = session.scalars(
-            select(Document)
-        ).all()
+    chunks = db.scalars(
+        select(DocumentChunk)
+        .where(DocumentChunk.document_id == document_id)
+        .order_by(DocumentChunk.chunk_index)
+    ).all()
 
-        return [
+    return {
+        "document_id": document.id,
+        "title": document.title,
+        "chunk_count": len(chunks),
+        "chunks": [
             {
-                "id": document.id,
-                "title": document.title,
-                "department": document.department,
+                "id": chunk.id,
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
             }
-            for document in documents
-        ]
-
+            for chunk in chunks
+        ],
+    }
 
 @app.post("/api/ask")
 def ask_question(question_input: QueryRequest):
@@ -145,10 +128,10 @@ def ask_question(question_input: QueryRequest):
 async def upload_document(
     file: UploadFile = File(...),
     department: str = Form("General"),
+    db: Session = Depends(get_db),
 ):
     try:
         content = await extract_text_from_upload(file)
-
     except ValueError as exc:
         raise HTTPException(
             status_code=400,
@@ -157,22 +140,20 @@ async def upload_document(
 
     title = file.filename or "Untitled Document"
 
-    with Session(engine) as session:
-        document = create_document_with_chunks(
-            session=session,
-            title=title,
-            content=content,
-            department=department,
-        )
+    document = create_document_with_chunks(
+        session=db,
+        title=title,
+        content=content,
+        department=department,
+    )
 
-        return {
-            "id": document.id,
-            "title": document.title,
-            "department": document.department,
-            "filename": file.filename,
-            "content_type": file.content_type,
-        }
-
+    return {
+        "id": document.id,
+        "title": document.title,
+        "department": document.department,
+        "filename": file.filename,
+        "content_type": file.content_type,
+    }
 
 # ---------------------------------------------------------
 # Frontend

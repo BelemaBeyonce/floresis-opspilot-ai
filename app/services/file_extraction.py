@@ -1,40 +1,48 @@
+from io import BytesIO
+
 from fastapi import UploadFile
+from pypdf import PdfReader
 
 
-SUPPORTED_TEXT_TYPES = {
-    "text/plain",
-}
+async def extract_text_from_upload(file: UploadFile) -> str:
+    content = await file.read()
 
+    if not content:
+        raise ValueError("Uploaded file is empty")
 
-async def extract_text_from_upload(
-    file: UploadFile,
-) -> str:
-    """
-    Extract text from a supported uploaded file.
-    """
+    # Handle plain-text files
+    if file.content_type == "text/plain":
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("Text file must use UTF-8 encoding")
 
-    if file.content_type not in SUPPORTED_TEXT_TYPES:
+    # Handle PDF files
+    elif file.content_type == "application/pdf":
+        try:
+            pdf_reader = PdfReader(BytesIO(content))
+
+            pages = []
+
+            for page in pdf_reader.pages:
+                page_text = page.extract_text() or ""
+                pages.append(page_text)
+
+            text = "\n".join(pages)
+
+        except Exception as exc:
+            raise ValueError(
+                "Unable to read PDF file"
+            ) from exc
+
+    else:
         raise ValueError(
             f"Unsupported file type: {file.content_type}"
         )
 
-    file_bytes = await file.read()
-
-    if not file_bytes:
-        raise ValueError("Uploaded file is empty")
-
-    try:
-        text = file_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
+    if not text.strip():
         raise ValueError(
-            "Unable to decode the uploaded text file as UTF-8"
-        ) from exc
-
-    text = text.strip()
-
-    if not text:
-        raise ValueError(
-            "Uploaded file contains no readable text"
+            "Uploaded file contains no extractable text"
         )
 
     return text
