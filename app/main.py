@@ -95,33 +95,69 @@ def get_document_chunks(
     }
 
 @app.post("/api/ask")
-def ask_question(question_input: QueryRequest):
+def ask_question(
+    question_input: QueryRequest,
+    db: Session = Depends(get_db),
+):
+    from app.services.semantic_search import semantic_search
+    from app.services.llm import generate_answer
 
-    with Session(engine) as session:
+    # Retrieve the most relevant document chunks.
+    evidence = semantic_search(
+        question=question_input.question,
+        db=db,
+        top_k=1,
+    )
 
-        documents = session.scalars(
-            select(Document)
-        ).all()
+    # Require at least some semantic similarity.
+    evidence = [
+        item for item in evidence
+        if item["similarity"] >= 0.35
+    ]
 
-        generated_answer, citations = answer(
-            question_input.question,
-            documents,
-        )
-
-        run = Run(
-            question=question_input.question,
-            answer=generated_answer,
-            citations=str(citations),
-        )
-
-        session.add(run)
-        session.commit()
-
+    if not evidence:
         return {
-            "answer": generated_answer,
-            "citations": citations,
-            "grounded": bool(citations),
+            "answer": "No relevant evidence was found in the uploaded documents.",
+            "citations": [],
+            "grounded": False,
         }
+
+    result = generate_answer(
+    question=question_input.question,
+    evidence=evidence,
+)
+
+    if not result["supported"]:
+        return {
+            "answer": result["answer"],
+            "citations": [],
+            "grounded": False,
+        }
+
+    citations = [
+        {
+            "source": index,
+            "document_id": item["document_id"],
+            "chunk_id": item["chunk_id"],
+            "similarity": round(item["similarity"], 4),
+        }
+        for index, item in enumerate(evidence, start=1)
+    ]
+
+    run = Run(
+        question=question_input.question,
+        answer=result["answer"],
+        citations=str(citations),
+    )
+
+    db.add(run)
+    db.commit()
+
+    return {
+        "answer": result["answer"],
+        "citations": citations,
+        "grounded": True,
+    }
 
 
 @app.post("/api/documents/upload")
